@@ -8,33 +8,34 @@ import plotly.express as px
 st.set_page_config(page_title="雲端外匯交易紀錄系統", layout="wide")
 st.title("🌐 Cloud Forex Trading Journal")
 
-# 1. 你的試算表網址（已簡化）
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1cRHmM9wPughGNmLboM844Hr4SiULdQrP53vAG_h5e8Q"
-# 2. 你的分頁名稱（務必與截圖中的 Sheet1 一致）
-SHEET_NAME = "Sheet1" 
+# 【重要：請確認網址】這是從您的截圖中提取的 ID
+# 網址：https://docs.google.com/spreadsheets/d/1cRHmM9wPughGNmLboM844Hr4SiULdQrP53vAG_h5e8Q/edit
+# ID 就是 d/ 之後，/edit 之前的那串字
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1cRHmM9wPughGNmLboM844Hr4SiULdQrP53vAG_h5e8Q/edit"
 
-# 初始化 Google Sheets 連線
+# 初始化連線
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
-    # 讀取雲端資料
-    return conn.read(spreadsheet=SHEET_URL, worksheet=SHEET_NAME, ttl=0)
+    # 使用指名道姓的方式讀取，分頁名稱務必是 Sheet1
+    return conn.read(spreadsheet=SHEET_URL, worksheet="Sheet1", ttl=0)
 
 def save_data(df):
-    # 將整份 DataFrame 覆蓋回雲端
-    conn.update(spreadsheet=SHEET_URL, worksheet=SHEET_NAME, data=df)
+    conn.update(spreadsheet=SHEET_URL, worksheet="Sheet1", data=df)
 
 # --- 嘗試讀取資料 ---
 try:
     df = load_data()
-    # 移除完全空白的列
     df = df.dropna(how='all')
+    if df.empty:
+        df = pd.DataFrame(columns=['id', 'time', 'direction', 'timeframe', 'target_rr', 'actual_rr', 'profit', 'outcome', 'setup', 'screenshot_path', 'notes'])
 except Exception as e:
-    st.error("⚠️ 無法連線至 Google Sheets")
-    st.warning(f"技術訊息：{e}")
+    st.error("⚠️ 無法讀取 Google 表格")
+    st.warning(f"可能原因：1.金鑰已更換但 Secrets 未更新 2.試算表未共用給 Service Account 3.分頁名稱不是 Sheet1")
+    st.info(f"技術訊息：{e}")
     df = pd.DataFrame()
 
-# --- 介面選單 ---
+# --- 選單介面 ---
 menu = ["新增交易", "數據統計", "匯出與導出"]
 choice = st.sidebar.selectbox("選單", menu)
 
@@ -53,73 +54,44 @@ if choice == "新增交易":
         actual_rr = st.number_input("實際結算 RR", step=0.1)
         notes = st.text_area("備註")
 
-    if st.button("儲存紀錄到雲端"):
-        # 計算新的 ID
-        if not df.empty and 'id' in df.columns:
-            try:
+    if st.button("儲存紀錄"):
+        try:
+            # 安全計算新 ID
+            if not df.empty and 'id' in df.columns:
                 max_id = pd.to_numeric(df['id'], errors='coerce').max()
                 new_id = int(max_id + 1) if not pd.isna(max_id) else 1
-            except:
+            else:
                 new_id = 1
-        else:
-            new_id = 1
+                
+            new_row = pd.DataFrame([{
+                "id": new_id,
+                "time": f"{trade_date} {trade_time}",
+                "direction": direction,
+                "timeframe": timeframe,
+                "target_rr": target_rr,
+                "actual_rr": actual_rr,
+                "profit": profit,
+                "outcome": "勝" if profit > 0 else "敗",
+                "setup": setup,
+                "screenshot_path": "", 
+                "notes": str(notes)
+            }])
             
-        new_row = pd.DataFrame([{
-            "id": new_id,
-            "time": f"{trade_date} {trade_time}",
-            "direction": direction,
-            "timeframe": timeframe,
-            "target_rr": target_rr,
-            "actual_rr": actual_rr,
-            "profit": profit,
-            "outcome": "勝" if profit > 0 else "敗",
-            "setup": setup,
-            "screenshot_path": "", 
-            "notes": str(notes)
-        }])
-        
-        # 合併新舊資料
-        updated_df = pd.concat([df, new_row], ignore_index=True)
-        
-        try:
+            updated_df = pd.concat([df, new_row], ignore_index=True)
             save_data(updated_df)
-            st.success("🎉 紀錄已成功同步至 Google Sheets！")
-            st.balloons()
+            st.success("🎉 資料已寫入雲端表格！")
             st.rerun()
         except Exception as e:
-            st.error(f"儲存失敗，請檢查 Secrets 權限設定。錯誤: {e}")
+            st.error(f"儲存失敗：{e}")
 
 elif choice == "數據統計":
-    st.header("📊 交易績效分析")
+    st.header("📊 績效統計")
     if not df.empty and len(df) > 0:
-        # 數據轉換處理
-        df['time'] = pd.to_datetime(df['time'], errors='coerce')
-        df = df.dropna(subset=['time']).sort_values(by='time')
-        df['profit'] = pd.to_numeric(df['profit'], errors='coerce').fillna(0)
-        df['cumulative_profit'] = df['profit'].cumsum()
-        
-        col1, col2 = st.columns(2)
-        win_rate = (df['outcome'] == '勝').sum() / len(df) * 100
-        col1.metric("總交易次數", len(df))
-        col2.metric("勝率", f"{win_rate:.2f}%")
-        
-        st.plotly_chart(px.line(df, x='time', y='cumulative_profit', title='資金曲線 (Equity Curve)'), use_container_width=True)
         st.dataframe(df.sort_values(by='id', ascending=False), use_container_width=True)
-        
-        st.divider()
-        st.subheader("🗑️ 刪除紀錄")
-        delete_id = st.number_input("輸入要刪除的 ID", step=1, value=0)
-        if st.button("確認刪除", type="primary"):
-            updated_df = df[df['id'] != delete_id]
-            save_data(updated_df)
-            st.warning(f"ID {delete_id} 已從雲端刪除")
-            st.rerun()
     else:
-        st.warning("目前尚無資料可統計。")
+        st.warning("目前尚無資料。")
 
 elif choice == "匯出與導出":
-    st.header("📤 導出 JSON 資料給 Gemini")
+    st.header("📤 導出")
     if not df.empty:
-        json_data = df.to_json(orient='records', force_ascii=False)
-        st.download_button("下載 JSON 檔案", json_data, file_name="trading_data.json", mime="application/json")
-        st.info("💡 下載此檔案後，直接貼給 Gemini 即可開始生成 EA 策略分析。")
+        st.download_button("下載 JSON", df.to_json(orient='records', force_ascii=False), file_name="trades.json")
