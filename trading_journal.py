@@ -8,28 +8,30 @@ import plotly.express as px
 st.set_page_config(page_title="雲端外匯交易紀錄系統", layout="wide")
 st.title("🌐 Cloud Forex Trading Journal")
 
-# 1. 你的試算表網址
+# 1. 你的試算表網址 (確認網址末端沒有多餘的中文字)
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1cRHmM9wPughGNmLboM844Hr4SiULdQrP53vAG_h5e8Q/edit#gid=0"
-# 2. 你的工作表分頁名稱 (請確保與 Google Sheets 左下角一致)
-SHEET_NAME = "工作表1" 
+# 2. 改為英文名稱，避免 ASCII 編碼錯誤
+SHEET_NAME = "Sheet1" 
 
 # 初始化連線
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
-    # 明確指定 spreadsheet 和 worksheet
-    return conn.read(spreadsheet=SHEET_URL, worksheet=SHEET_NAME, ttl="0")
+    # 使用 ttl=0 確保不使用緩存
+    return conn.read(spreadsheet=SHEET_URL, worksheet=SHEET_NAME, ttl=0)
 
 def save_data(df):
-    # 明確指定 spreadsheet 和 worksheet
-    # 使用 conn.update 覆蓋整個工作表內容
+    # 寫入時也指定英文分頁名
     conn.update(spreadsheet=SHEET_URL, worksheet=SHEET_NAME, data=df)
 
 # --- 讀取資料 ---
 try:
     df = load_data()
+    # 移除全空的列 (如果有)
+    df = df.dropna(how='all')
 except Exception as e:
-    st.error(f"讀取資料失敗，請檢查權限或網址。錯誤訊息: {e}")
+    st.error(f"連線失敗！請確認 Google 表格分頁已更名為 'Sheet1'。")
+    st.info(f"技術錯誤訊息: {e}")
     df = pd.DataFrame()
 
 # --- 選單邏輯 ---
@@ -52,11 +54,12 @@ if choice == "新增交易":
         notes = st.text_area("備註")
 
     if st.button("儲存紀錄到雲端"):
-        # 計算新 ID
+        # 安全計算 ID
         if not df.empty and 'id' in df.columns:
-            # 確保 id 轉為數字處理，避免出現文字導致無法 max
-            valid_ids = pd.to_numeric(df['id'], errors='coerce').dropna()
-            new_id = int(valid_ids.max() + 1) if not valid_ids.empty else 1
+            try:
+                new_id = int(pd.to_numeric(df['id'], errors='coerce').max() + 1)
+            except:
+                new_id = 1
         else:
             new_id = 1
             
@@ -71,32 +74,33 @@ if choice == "新增交易":
             "outcome": "勝" if profit > 0 else "敗",
             "setup": setup,
             "screenshot_path": "", 
-            "notes": str(notes) # 確保是字串
+            "notes": str(notes)
         }])
         
-        # 合併並存回雲端
         updated_df = pd.concat([df, new_row], ignore_index=True)
         
         try:
             save_data(updated_df)
-            st.success("🎉 雲端儲存成功！資料已寫入 Google Sheets")
-            st.balloons()
-            # 延遲一下讓 Google Sheets 反應
-            st.info("正在更新畫面...")
+            st.success("🎉 儲存成功！")
             st.rerun()
         except Exception as e:
-            st.error(f"儲存失敗！這通常是權限問題。請確認 Secrets 設定正確，且試算表已共享給 Service Account。詳細錯誤: {e}")
+            st.error(f"儲存失敗: {e}")
 
 elif choice == "數據統計":
-    # (統計邏輯保持不變...)
     st.header("📊 雲端數據分析")
-    if not df.empty:
-        df['time'] = pd.to_datetime(df['time'])
+    if not df.empty and len(df) > 0:
+        # 轉換時間並過濾無效值
+        df['time'] = pd.to_datetime(df['time'], errors='coerce')
+        df = df.dropna(subset=['time'])
         df = df.sort_values(by='time', ascending=True)
+        
+        # 累積盈虧
+        df['profit'] = pd.to_numeric(df['profit'], errors='coerce').fillna(0)
         df['cumulative_profit'] = df['profit'].cumsum()
         
         col_m1, col_m2 = st.columns(2)
-        win_rate = (df['outcome'] == '勝').sum() / len(df) * 100
+        win_count = (df['outcome'] == '勝').sum()
+        win_rate = (win_count / len(df) * 100) if len(df) > 0 else 0
         col_m1.metric("總交易次數", len(df))
         col_m2.metric("勝率", f"{win_rate:.2f}%")
         
@@ -111,12 +115,10 @@ elif choice == "數據統計":
             st.warning(f"ID {delete_id} 已刪除")
             st.rerun()
     else:
-        st.warning("尚無資料。")
+        st.warning("目前雲端尚無交易資料。")
 
 elif choice == "匯出與導出":
     st.header("📤 數據導出")
     if not df.empty:
         json_data = df.to_json(orient='records', force_ascii=False)
         st.download_button("下載 JSON 給 Gemini", json_data, file_name="trades.json", mime="application/json")
-    else:
-        st.warning("無資料可匯出")
