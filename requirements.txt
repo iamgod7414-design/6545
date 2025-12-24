@@ -3,4 +3,4 @@ pandas
 st-gsheets-connection
 plotly
 fpdf2
-kaleido
+matplotlib
